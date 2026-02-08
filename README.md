@@ -12,6 +12,76 @@ Along the way it shows how to:
 - Reuse the exact same DI registrations your application uses
 - Write test classes that receive services through **constructor injection** — no `new` keywords, no service locators
 
+## ✨ The Elegance — One Registration, Two Consumers
+
+The core insight of this demo is that **TUnit lets your test classes consume dependencies the same way your production code does**. The glue is a single extension method — [`AddGravity()`](Gravity/DependencySetup.cs) — called from two places:
+
+**Production — [`Program.cs`](Gravity/Program.cs):**
+
+```csharp
+builder.Services.AddGravity();
+```
+
+**Tests — [`GravityDIAttribute.cs`](Gravity.Test/Data/GravityDIAttribute.cs):**
+
+```csharp
+var serviceCollection = new ServiceCollection();
+serviceCollection.AddGravity();
+```
+
+That single shared call means the object graph is identical. Now look at how similar the *consumers* become:
+
+| | Production controller | Test class |
+|---|---|---|
+| **File** | [`GravityController.cs`](Gravity/Controllers/GravityController.cs) | [`GravityCalculatorTests.cs`](Gravity.Test/GravityCalculatorTests.cs) |
+| **DI trigger** | ASP.NET Core's built-in DI | `[GravityDI]` attribute |
+| **Injection style** | Primary constructor parameter | Primary constructor parameter |
+
+**The controller:**
+
+```csharp
+[ApiController]
+[Route("api/[controller]")]
+public class GravityController(IGravityCalculator calculator) : ControllerBase
+{
+    [HttpGet("calculate")]
+    public ActionResult GetGravity([FromQuery] double weightKg, [FromQuery] Planet planet)
+    {
+        double result = calculator.CalculateForce(weightKg, planet);
+        // ...
+    }
+}
+```
+
+**The test class:**
+
+```csharp
+[GravityDI]
+public class GravityCalculatorTests(IGravityCalculator calculator)
+{
+    [Test]
+    [Arguments(100.0, Planet.Earth, 980.7)]
+    public async Task CalculateForce_ReturnsCorrectForce(double mass, Planet planet, double expected)
+    {
+        var result = calculator.CalculateForce(mass, planet);
+        await Assert.That(result).IsEqualTo(expected);
+    }
+}
+```
+
+Notice the symmetry: both classes declare `IGravityCalculator calculator` as a **primary constructor parameter** and simply *use* it. Neither class knows how the calculator was built, what its dependencies are, or how it was registered. The framework — ASP.NET Core in production, TUnit in tests — resolves it from the same [`AddGravity()`](Gravity/DependencySetup.cs) registrations.
+
+### Why this makes TUnit special
+
+Most testing frameworks treat DI as an afterthought. You either `new` up your dependencies by hand, or you bolt on a third-party container with ceremony. TUnit's `DependencyInjectionDataSourceAttribute` makes DI a **first-class concept** at the test-class level:
+
+- **The pattern is identical to production code.** A controller receives `IGravityCalculator` via its constructor; a test class receives it the same way. There is no mental context switch.
+- **The registrations are shared.** You call [`AddGravity()`](Gravity/DependencySetup.cs) in both [`Program.cs`](Gravity/Program.cs) and [`GravityDIAttribute`](Gravity.Test/Data/GravityDIAttribute.cs). If you add a new service to the app, the tests get it automatically.
+- **Swapping is trivial.** Need a mock? Create a `TestGravityDIAttribute` that registers fakes instead — the test class itself doesn't change at all.
+- **Cleanup is built-in.** The `IAsyncDisposable` scope means the `ServiceProvider` (and all its disposable services) is torn down automatically after each test class.
+
+In short: **TUnit lets you write test classes that look, feel, and behave like production consumers of your DI container.** That is the elegance.
+
 ## 🧪 TUnit Dependency Injection — Step by Step
 
 ### 1. Register your application services in one place
@@ -113,19 +183,12 @@ public class GravityCalculatorTests(IGravityCalculator calculator)  // ← const
 3. The resolved service is passed into the constructor.
 4. After the tests complete, `Scope.DisposeAsync()` tears down the container.
 
-### Why this approach is useful
-
-- ✅ **No manual instantiation** — you never write `new GravityCalculator(new GravityConfiguration())` in your tests
-- ✅ **Single source of truth** — tests use the same [`AddGravity()`](Gravity/DependencySetup.cs) registrations as production
-- ✅ **Easy to swap** — register a mock or stub in a different attribute and the test class doesn't change
-- ✅ **Proper cleanup** — the `IAsyncDisposable` scope ensures resources are released
-
 ## 🏗️ Project Structure
 
 ```
 ├── Gravity/                            # ASP.NET Core Web API
 │   ├── Controllers/
-│   │   └── GravityController.cs        # API endpoint
+│   │   └── GravityController.cs        # API endpoint (receives IGravityCalculator via DI)
 │   ├── Interfaces/
 │   │   ├── IGravityCalculator.cs       # Calculator contract
 │   │   └── IGravityConfiguration.cs    # Configuration contract
@@ -134,13 +197,13 @@ public class GravityCalculatorTests(IGravityCalculator calculator)  // ← const
 │   ├── Services/
 │   │   ├── GravityCalculator.cs        # Calculator implementation
 │   │   └── GravityConfiguration.cs     # Planet gravity factors
-│   ├── DependencySetup.cs              # AddGravity() extension method
-│   └── Program.cs                      # App entry point
+│   ├── DependencySetup.cs              # AddGravity() — shared by app and tests ⭐
+│   └── Program.cs                      # Calls AddGravity() for production
 │
 ├── Gravity.Test/                       # TUnit test project
 │   ├── Data/
-│   │   └── GravityDIAttribute.cs       # Custom DI attribute ⭐
-│   └── GravityCalculatorTests.cs       # Tests with constructor injection ⭐
+│   │   └── GravityDIAttribute.cs       # Calls AddGravity() for tests ⭐
+│   └── GravityCalculatorTests.cs       # Receives IGravityCalculator via DI ⭐
 │
 └── Gravity.slnx                        # Solution file
 ```
@@ -172,16 +235,19 @@ Or with detailed output:
 dotnet run -- --report-trx --output ./test-results
 ```
 
+> [!NOTE]
 > **Why `dotnet run` instead of `dotnet test`?**
 >
-> TUnit is fundamentally different from traditional .NET test frameworks. It uses **source generators** to discover and wire up tests at compile time rather than relying on runtime reflection. The TUnit test project compiles into a **standalone executable** with its own entry point — it is not a class library that needs a separate test host to load it.
+> TUnit is architecturally different from traditional .NET test frameworks. It uses **source generators** to discover and wire up tests at compile time rather than relying on runtime reflection. A TUnit test project compiles into a **standalone executable** with its own entry point — it is not a class library that needs a separate test host to load it.
 >
-> Because of this architecture, `dotnet run` simply executes the compiled binary directly, which is the natural way to launch it. While `dotnet test` can still work (TUnit ships a VSTest adapter for IDE compatibility), `dotnet run` is the **recommended** approach because:
+> Because of this, `dotnet run` simply executes the compiled binary directly. While `dotnet test` still works (TUnit ships a VSTest adapter for IDE compatibility), `dotnet run` is the **recommended** approach because:
 >
-> - **It is faster** — it skips the VSTest/MSTest hosting layer entirely and runs the executable directly.
-> - **It matches the architecture** — TUnit projects *are* executables, so running them as executables is the most straightforward path.
-> - **Better CLI output** — TUnit's built-in console reporter gives you richer, real-time output when run directly.
-> - **Full control over arguments** — you pass TUnit-specific flags directly after `--` without fighting the `dotnet test` argument format.
+> | | `dotnet run` | `dotnet test` |
+> |---|---|---|
+> | **Speed** | Runs the executable directly — no hosting overhead | Spins up the VSTest engine first |
+> | **Architecture fit** | TUnit projects *are* executables; running them as such is natural | Treats the project as a test library loaded by an external host |
+> | **CLI output** | TUnit's built-in console reporter with rich, real-time output | Standard VSTest output |
+> | **Argument passing** | Pass TUnit flags directly after `--` | Must conform to `dotnet test` argument format |
 
 ### Run the API
 
