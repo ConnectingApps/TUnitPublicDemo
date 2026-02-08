@@ -1,7 +1,5 @@
 using System.Text.Json.Serialization;
 using Gravity;
-using Gravity.Interfaces;
-using Gravity.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
