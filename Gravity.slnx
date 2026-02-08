@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Gravity.Test/Gravity.Test.csproj" />
+  <Project Path="Gravity/Gravity.csproj" />
+</Solution>

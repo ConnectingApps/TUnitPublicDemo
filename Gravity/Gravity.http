@@ -1,0 +1,11 @@
+@Gravity_HostAddress = http://localhost:5073
+
+GET {{Gravity_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
+
+GET {{Gravity_HostAddress}}/api/gravity/calculate?weightKg=70&planet=Earth
+Accept: application/json
+
+###
